@@ -8,7 +8,7 @@ This project is a data pipeline built on **Databricks** using **PySpark**, **Del
 
 The pipeline moves data through three maturity layers:
 
-![Medallion Architecture](docs/medallion_final.gif)
+![NYC Project Architecture](docs/nyctaxi_project_architecture.png)
 
 ### 1. Landing Layer (`data_sources` Volume)
 Stores raw files exactly as they are downloaded:
@@ -64,7 +64,7 @@ nyctaxi_pipeline/
 ├── ad_hoc/                                     # Exploratory analysis notebook
 │   └── yellow_taxi_eda.ipynb
 ├── docs/                                       # Images and documentation assets
-│   ├── medallion_final.gif
+│   ├── nyctaxi_project_architecture.png
 │   └── orchestration.png
 ├── one_off/                                    # Initial deployment and catalog setup DDL
 │   ├── creating_catalogs_schema_volume.ipynb
