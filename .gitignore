@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# IDE settings
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Databricks config & secrets
+.databricks/
+secrets.json
+.env
+.env.*
+
+# OS Metadata
+Thumbs.db
+.DS_Store
+ehthumbs.db
+desktop.ini
+
+# Project Internal Documentation (not for GitHub)
+project_documentation.md
