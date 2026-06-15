@@ -1,93 +1,140 @@
-# NYC Taxi Data Pipeline
+# NYC Yellow Taxi Data Pipeline
 
-This project is a data pipeline built on **Databricks** using **PySpark**, **Delta Lake**, and **Unity Catalog**. It processes yellow taxi data using the **Medallion Architecture** (Bronze -> Silver -> Gold). The project works with six months of data.
+A batch data pipeline built on **Databricks** that processes yellow taxi trip data using the **Medallion Architecture** (Bronze to Silver to Gold). The pipeline covers 6 months of historical data (**October 2025 to March 2026**) with a monthly incremental load going forward.
 
----
-
-## Data Pipeline Architecture
-
-The pipeline moves data through three maturity layers:
-
-![NYC Project Architecture](docs/nyctaxi_project_architecture.png)
-
-### 1. Landing Layer (`data_sources` Volume)
-Stores raw files exactly as they are downloaded:
-- Taxi trip records: `.parquet` files
-- Taxi zone lookup: `.csv` files
-
-### 2. Bronze Layer (`01_bronze` schema)
-- Table: `yellow_trips_raw`
-- Ingests files from the landing volume and adds a processing timestamp (`processed_timestamp`).
-
-### 3. Silver Layer (`02_silver` schema)
-Cleans and formats the data:
-- **`taxi_zone_lookup`**: Cleans headers and prepares lookup zones.
-- **`yellow_trips_cleansed`**: Converts vendor, payment, and rate IDs to text (e.g., Curb Mobility, Credit Card). It filters out incorrect dates and calculates trip duration in minutes.
-- **`yellow_trips_enriched`**: Joins the cleansed trips table with the zone lookup table to map pickup and dropoff locations to actual borough and zone names.
-
-### 4. Gold Layer (`03_gold` schema)
-- Table: `daily_trip_summary`
-- Aggregates the enriched trip records by pickup date. It calculates metrics such as total trips, average distance, average fare, and total revenue per day.
+**Tools:** Databricks, PySpark, Delta Lake, Unity Catalog, Databricks Workflows
 
 ---
 
-## Ingestion Modes
+## Architecture
 
-### 1. Historical Backfill
-Processes 6 months of historical data from **October 2025 to March 2026** by overwriting existing tables. This creates a clean initial baseline.
+![Architecture](docs/nyctaxi_project_architecture.png)
 
-### 2. Monthly Incremental Load
-Runs on a schedule to process **1 month of data at a time** in append mode. It pulls data from 2 months prior to handle vendor delays (for example, a run in June 2026 processes April 2026 data).
+The project works with two source files:
 
----
+| File | Format | Description |
+|---|---|---|
+| `yellow_tripdata_YYYY-MM.parquet` | Parquet | Monthly yellow taxi trip records |
+| `taxi_zone_lookup.csv` | CSV | Maps location IDs to borough and zone names |
 
-## Workflow Orchestration
-
-The pipeline is automated using a **Databricks Workflow Job**.
-
-![Orchestration DAG](docs/orchestration.png)
-
-### Tasks:
-- **`00_ingest_lookup`** / **`00_ingest_yellow_trips`**: Download files to the landing volume.
-- **`continue_downstream_lookup`** / **`continue_downstream_yellow`**: Stop execution if no new data is found.
-- **`01_yellow_trips_raw`**: Ingests raw files to Bronze.
-- **`02_taxi_zone_lookup`** / **`02_yellow_trips_cleansed`**: Transforms files to Silver.
-- **`02_yellow_trips_enriched`**: Combines cleansed trips with lookup zones.
-- **`03_daily_trip_summary`**: Aggregates data to Gold.
+Data flows through four layers managed inside the `nyctaxi` Unity Catalog.
 
 ---
 
-## Repository Structure
+## Data Layers
 
-```text
+### Landing — `00_landing` (Volume: `data_sources`)
+
+Raw files are downloaded and stored exactly as-is. No transformations happen here.
+
+```
+data_sources/
+├── lookup/taxi_zone_lookup.csv
+└── nyctaxi_yellow/YYYY-MM/yellow_tripdata_YYYY-MM.parquet
+```
+
+### Bronze — `01_bronze`
+
+| Table | What it does |
+|---|---|
+| `yellow_trips_raw` | Loads the raw Parquet into a Delta table. Adds a `processed_timestamp` column. Everything else stays exactly as in the source file. |
+
+### Silver — `02_silver`
+
+| Table | What it does |
+|---|---|
+| `taxi_zone_lookup` | Cleans column names. Keeps a history of any changes to zone names or boroughs over time. |
+| `yellow_trips_cleansed` | Converts coded IDs (vendor, payment type, rate code) to readable text. Calculates trip duration in minutes. Drops records outside the target month. |
+| `yellow_trips_enriched` | Joins the cleansed trips against the zone lookup twice (once for pickup, once for dropoff) to add borough and zone name to every trip record. |
+
+### Gold — `03_gold`
+
+| Table | What it does |
+|---|---|
+| `daily_trip_summary` | Groups trips by pickup date and computes: total trips, average fare, average distance, average passengers, max fare, min fare, and total revenue. Ready to plug into a BI tool. |
+
+---
+
+## How the Pipeline Runs
+
+### Part 1 — Historical Backfill (run once)
+
+Loads 6 months of historical data from **October 2025 to March 2026** in overwrite mode. This sets up the initial baseline tables.
+
+### Part 2 — Monthly Incremental Load (runs on a schedule)
+
+Runs every month and appends one new month of data.
+
+Because taxi data is typically published with a 2-month delay, each run targets the month 2 months before the current date:
+
+> Run in **June 2026** processes **April 2026** data
+
+If the file for the target month is already downloaded, or hasn't been published yet, the pipeline exits early without running unnecessary compute.
+
+---
+
+## Orchestration
+
+![Orchestration](docs/orchestration.png)
+
+The pipeline runs as a **Databricks Workflow Job** with the following tasks:
+
+1. `00_ingest_lookup` — Downloads the zone lookup file if a new version exists
+2. `continue_downstream_lookup` — Stops here if no lookup update is needed
+3. `02_taxi_zone_lookup` — Updates the zone lookup table in Silver
+4. `00_ingest_yellow_trips` — Downloads the monthly trip Parquet file
+5. `continue_downstream_yellow` — Stops here if no new trip file is available
+6. `01_yellow_trips_raw` — Loads raw trips into Bronze
+7. `02_yellow_trips_cleansed` — Cleans and formats trips in Silver
+8. `02_yellow_trips_enriched` — Joins trips with zones (depends on steps 3 and 7 both finishing)
+9. `03_daily_trip_summary` — Writes daily aggregates to Gold
+
+---
+
+## Folder Structure
+
+```
 nyctaxi_pipeline/
-├── ad_hoc/                                     # Exploratory analysis notebook
-│   └── yellow_taxi_eda.ipynb
-├── docs/                                       # Images and documentation assets
-│   ├── nyctaxi_project_architecture.png
-│   └── orchestration.png
-├── one_off/                                    # Initial deployment and catalog setup DDL
-│   ├── creating_catalogs_schema_volume.ipynb
-│   └── initial_load/                           # Historical baseline loading notebooks
-│       └── notebooks/
-│           ├── 00_landing/
-│           ├── 01_bronze/
-│           ├── 02_silver/
-│           └── 03_gold/
-├── transformations/                            # Production incremental notebooks
-│   └── notebooks/
-│       ├── 00_landing/
-│       ├── 01_bronze/
-│       ├── 02_silver/
-│       └── 03_gold/
-├── .gitignore
-└── README.md
+|
++-- one_off/                         # Run once during initial setup
+|   +-- creating_catalogs_schema_volume.ipynb
+|   +-- initial_load/
+|       +-- notebooks/
+|           +-- 00_landing/          # Downloads Oct 2025 to Mar 2026 data
+|           +-- 01_bronze/           # Loads raw data into Bronze (overwrite)
+|           +-- 02_silver/           # Builds Silver tables (overwrite)
+|           +-- 03_gold/             # Builds Gold summary (overwrite)
+|
++-- transformations/                 # Runs every month on a schedule
+|   +-- notebooks/
+|       +-- 00_landing/              # Downloads the new monthly file
+|       +-- 01_bronze/               # Appends new raw data to Bronze
+|       +-- 02_silver/               # Appends to Silver tables
+|       +-- 03_gold/                 # Appends new monthly summary to Gold
+|
++-- ad_hoc/
+|   +-- yellow_taxi_eda.ipynb        # Exploratory analysis
+|
++-- docs/
+|   +-- nyctaxi_project_architecture.png
+|   +-- orchestration.png
+|
++-- .gitignore
++-- README.md
 ```
 
 ---
 
-## How to Run the Pipeline
+## How to Set Up and Run
 
-1. **Setup Catalog & Schemas:** Run the notebook `one_off/creating_catalogs_schema_volume.ipynb` to create the catalog `nyctaxi`, target schemas, and storage volume.
-2. **Run Historical Load:** Execute the notebooks inside `one_off/initial_load/notebooks/` to load the 6 months of historical data.
-3. **Deploy the Scheduled Job:** Create a Databricks Job using the notebooks inside the `transformations/` folder, configured to run monthly.
+**Step 1 — Create the catalog, schemas, and storage volume**
+
+Open `one_off/creating_catalogs_schema_volume.ipynb` in Databricks and run all cells. This creates the `nyctaxi` catalog, the four schemas, and the `data_sources` volume.
+
+**Step 2 — Load the historical data**
+
+Run the notebooks in `one_off/initial_load/notebooks/` in order: landing, then bronze, then silver, then gold. This loads all 6 months of historical data.
+
+**Step 3 — Deploy the monthly scheduled job**
+
+In Databricks Workflows, create a new job that points to the notebooks in `transformations/notebooks/` and schedule it to run monthly.
